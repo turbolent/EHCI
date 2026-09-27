@@ -1,0 +1,12 @@
+"Title" = "PCI EHCI USB 2.0 Controller";
+"Family" = "System";
+"Version" = "0.1";
+"Location" = "";
+"Instance" = "0";
+"Driver Name" = "EHCIController";
+"Class Names" = "EHCIController";
+"Boot Driver";
+"Bus Type" = "PCI";
+"Interrupt Mode" = "INTx";
+"Share IRQ Levels" = "Yes";
+"Auto Detect IDs" = "0x24cd8086 0x265c8086 0x268c8086 0x28368086 0x283a8086 0x293a8086 0x293c8086 0x3a3a8086 0x3a3c8086 0x3b348086 0x3b3c8086 0x1c268086 0x1c2d8086 0x1e268086 0x1e2d8086";

@@ -1,0 +1,33 @@
+/* Private linkage names: EHCI and XHCI may be loaded together. */
+#ifndef EHCI_USB_NAMES_H
+#define EHCI_USB_NAMES_H
+#define USBCoreControlTransfer EHCIUSBCoreControlTransfer
+#define USBCoreDescriptorIteratorInitialize EHCIUSBCoreDescriptorIteratorInitialize
+#define USBCoreDescriptorNext EHCIUSBCoreDescriptorNext
+#define USBCoreDeviceInitialize EHCIUSBCoreDeviceInitialize
+#define USBCoreEnumerateDevice EHCIUSBCoreEnumerateDevice
+#define USBCoreEnumerationErrorName EHCIUSBCoreEnumerationErrorName
+#define USBCoreEnumerationStageName EHCIUSBCoreEnumerationStageName
+#define USBCoreGetDescriptor EHCIUSBCoreGetDescriptor
+#define USBCoreReadLE16 EHCIUSBCoreReadLE16
+#define USBCoreSetConfiguration EHCIUSBCoreSetConfiguration
+#define USBCoreSetInterface EHCIUSBCoreSetInterface
+#define USBHIDBootMouseReportChanged EHCIUSBHIDBootMouseReportChanged
+#define USBHIDFindBootInterface EHCIUSBHIDFindBootInterface
+#define USBHIDSetBootProtocol EHCIUSBHIDSetBootProtocol
+#define USBHIDSetIdle EHCIUSBHIDSetIdle
+#define USBHIDSetKeyboardLEDs EHCIUSBHIDSetKeyboardLEDs
+#define USBHIDUsageToPCKey EHCIUSBHIDUsageToPCKey
+#define USBMassStorageCommand EHCIUSBMassStorageCommand
+#define USBMassStorageFindInterface EHCIUSBMassStorageFindInterface
+#define USBMassStorageGetMaxLUN EHCIUSBMassStorageGetMaxLUN
+#define USBMassStorageReset EHCIUSBMassStorageReset
+#define USBStorageBufferCopy EHCIUSBStorageBufferCopy
+#define USBStorageBufferMap EHCIUSBStorageBufferMap
+#define USBStorageBufferUnmap EHCIUSBStorageBufferUnmap
+#define USBStorageCDBLength EHCIUSBStorageCDBLength
+#define USBStorageSCSIExecute EHCIUSBStorageSCSIExecute
+#define USBStorageSCSIObserve EHCIUSBStorageSCSIObserve
+#define USBStorageWait EHCIUSBStorageWait
+#define USBStorageWaitTicks EHCIUSBStorageWaitTicks
+#endif
