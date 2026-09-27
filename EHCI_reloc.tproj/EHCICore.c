@@ -206,6 +206,15 @@ int EHCICoreStart(EHCIControllerState *c)
         c->portChanges |= 1U << p;
     }
     EHCIPlatformPause(c, 20);
+    /* A boot disk cannot be diagnosed with runtime status tools. Record
+     * the post-handoff port state once, before initial enumeration. */
+    for (p = 1; p <= c->maxPorts && !c->fatal; p++) {
+        ehci_u32 v = read_op(c, EHCI_PORT(p));
+        if (c->fatal) break;
+        EHCIPlatformLog("EHCI: initial port %u PORTSC=%08x connected=%u enabled=%u owner=%u power=%u\n",
+            p, v, !!(v & EHCI_PORT_CONNECT), !!(v & EHCI_PORT_ENABLE),
+            !!(v & EHCI_PORT_OWNER), !!(v & EHCI_PORT_POWER));
+    }
     return !c->fatal;
 }
 

@@ -36,6 +36,34 @@ Configure.app should open and confirm the driver was installed.
 Click Add, select `PCI EHCI USB 2.0 Controller`, and add the driver.
 If the driver is not shown, check `Show All Installed Drivers` and select it.
 
+Each EHCI controller needs its own `InstanceN.table` in `EHCI.config`.
+A single `Instance0.table` attaches only one controller, even if `Auto Detect IDs`
+matches several. Add one instance per controller in Configure.app, or create the
+tables manually from `Default.table`, retaining the other driver settings.
+
+For portable autodetection of two controllers, use:
+
+| Table | `Instance` | `Location` | `USB Input` |
+| --- | --- | --- | --- |
+| `Instance0.table` | `"0"` | `""` | `"Yes"` |
+| `Instance1.table` | `"1"` | `""` | `"No"` |
+
+Keep the same full `Auto Detect IDs` list from `Default.table` in both tables.
+With an empty `Location`, PCIBus scans in bus/device/function order and selects
+the zero-based `Instance` match: 0 selects the first matching controller and 1
+selects the second. This works whether their PCI IDs are identical or different.
+Do not restrict the second table to one controller's ID while keeping
+`Instance = 1`: that would request the second match of the restricted list.
+If only one controller matches, the second instance finds no device; it does not
+attach the first controller again. A third controller requires `Instance2.table`
+with `Instance = 2` and the same detection list.
+
+This configuration supports storage on both controllers, with keyboard/mouse
+input through the first only. Include both instance tables on boot media and
+the installed system. On boot media the bundle is under
+`/private/Drivers/i386/EHCI.config`; on the installed system it is under
+`/private/Devices/EHCI.config`.
+
 If the controller is not automatically detected, click Expert and set `Location`
 to the controller's PCI coordinates using this exact syntax:
 
@@ -57,9 +85,11 @@ EHCI instances, or on all instances if keeping your existing input drivers.
 Storage works with USB input disabled. Click Done, click Save, and Quit.
 
 Verify that `/private/Devices/EHCI.config/Instance0.table` contains the expected
-`Location`, `Interrupt Mode`, `Share IRQ Levels` and `USB Input` settings.
+`Instance`, `Location`, `Auto Detect IDs`, `Interrupt Mode`, `Share IRQ Levels`
+and `USB Input` settings.
 For additional controllers, check their corresponding `InstanceN.table` files.
-In `/private/Devices/System.config/Instance0.table`, load `EHCI` after `PCIBus`
+In `/private/Devices/System.config/Instance0.table`, list `EHCI` only once in
+`Boot Drivers`; its instance tables select the controllers. Load it after `PCIBus`
 and the existing root-storage controller in `Boot Drivers` to preserve root disk
 numbering. For example, `PCIBus Intel824X0 BusMasterIDE EHCI` retains IDE first.
 

@@ -82,7 +82,10 @@ static void pointerThread(void *ctx) { [(EHCIController *)ctx runInputLoop:1]; I
     ehci_u32 routing;
     const char *value;
     IOConfigTable *table = [description configTable];
-    [self setUnit:~0U];
+    /* IOSCSIController free decrements its counter when unit == counter - 1.
+     * With no controllers, ~0U matches -1 and corrupts that counter even
+     * though this rejected probe never called superclass initialization. */
+    [self setUnit:0x7fffffffU];
     _pciDescription = description;
     _state.owner = self;
     _interruptState.ops = &interruptOps; _interruptState.context = self;
@@ -142,6 +145,9 @@ static void pointerThread(void *ctx) { [(EHCIController *)ctx runInputLoop:1]; I
     _scsiThreadStarted = YES;
     {
         char name[24]; id existing; unsigned unit = [self unit];
+        /* A previously rejected controller can leave DriverKit's shared
+         * counter negative. Recover the registered namespace from sc0. */
+        if (unit & 0x80000000U) unit = 0;
         do { sprintf(name, "sc%u", unit++); }
         while (IOGetObjectForDeviceName(name, &existing) == IO_R_SUCCESS);
         [self setUnit:unit - 1]; [self setName:name];
@@ -188,6 +194,15 @@ static void pointerThread(void *ctx) { [(EHCIController *)ctx runInputLoop:1]; I
     irqPublish(self);
     [_eventLock lock]; i = EHCICoreServicePorts(&_state); [_eventLock unlock];
     if (!i || _interruptState.stopping) return [self failInitializationAt:__LINE__];
+    {
+        unsigned targets = 0;
+        [_eventLock lock];
+        for (i = 0; i < USB_STORAGE_TARGETS; i++)
+            if (_state.storage[i].slot) targets++;
+        [_eventLock unlock];
+        IOLog("EHCI: %s initial scan: %u storage targets\n",
+            [self name], targets);
+    }
     if (!IOForkThread(managementThread, self) || !IOForkThread(keyboardThread, self) ||
         !IOForkThread(pointerThread, self)) return [self failInitializationAt:__LINE__];
     if (usbInput) {

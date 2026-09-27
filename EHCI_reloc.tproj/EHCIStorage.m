@@ -573,7 +573,7 @@ out:
     if (_interruptState.stopping || _state.fatal) result = IO_R_NO_DEVICE;
     else if (_storageActiveRequests) result = IO_R_BUSY;
     else if (moderation) {
-        /* EHCI 0.1 uses one microframe (125 us), fixed in USBCMD.ITC. */
+        /* Interrupt moderation uses one microframe (125 us), fixed in USBCMD.ITC. */
     } else {
         /* 0 disables, 1 enables, 2 resets totals without changing enablement. */
         if (values[0] == 2) bzero(_storageMetrics, sizeof(_storageMetrics));
