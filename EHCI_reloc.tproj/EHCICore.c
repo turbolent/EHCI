@@ -47,6 +47,10 @@ static int wait_bits(EHCIControllerState *c, unsigned offset,
 {
     ehci_u64 end = EHCIPlatformMilliseconds() + timeout;
     ehci_u32 v = 0;
+    /* Only schedule-status handshakes get a bounded fast path. Port reset,
+     * controller reset/halt and software-owner waits still yield normally. */
+    unsigned spin = offset == EHCI_STS && mask &&
+        !(mask & ~(EHCI_STS_PSS | EHCI_STS_ASS)) ? 1000 : 0;
     for (;;) {
         v = read_op(c, offset);
         if (c->fatal) return 0;
@@ -54,7 +58,8 @@ static int wait_bits(EHCIControllerState *c, unsigned offset,
         /* IOSleep/reacquiring the state lock can exceed the deadline during
          * boot. Always observe the hardware after waking before timing out. */
         if (EHCIPlatformMilliseconds() >= end) break;
-        EHCIPlatformPause(c, 1);
+        if (spin) { EHCIPlatformDelay(c, 10); spin -= 10; }
+        else EHCIPlatformPause(c, 1);
     }
     c->waitOffset = offset; c->waitMask = mask;
     c->waitExpected = expected; c->waitObserved = v;

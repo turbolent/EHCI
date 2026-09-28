@@ -84,6 +84,8 @@ void EHCIPlatformFree(void *, ehci_u32);
 ehci_u32 EHCIPlatformPhysical(void *);
 ehci_u64 EHCIPlatformMilliseconds(void);
 void EHCIPlatformPause(EHCIControllerState *, unsigned milliseconds);
+/* Bounded hardware wait only: keeps the state lock, never the boundary lock. */
+void EHCIPlatformDelay(EHCIControllerState *, unsigned microseconds);
 void EHCIPlatformWake(void *);
 void EHCIPlatformKeyboardReport(void *, const ehci_u8 *, ehci_u32);
 void EHCIPlatformPointerReport(void *, const ehci_u8 *, ehci_u32);

@@ -120,7 +120,9 @@ static USBStorageResult command(USBMassStorage *s, const ehci_u8 *cdb,
     put32(cbw, 0x43425355UL);
     if (++s->tag == 0) ++s->tag;
     put32(cbw + 4, s->tag); put32(cbw + 8, length);
-    cbw[12] = read ? 0x80 : 0; cbw[14] = (ehci_u8)cdbLength;
+    /* BOT 5.1 ignores direction when length is zero. Use OUT then so devices
+     * such as VBox MSD skip the nonexistent data phase and return the CSW. */
+    cbw[12] = length && read ? 0x80 : 0; cbw[14] = (ehci_u8)cdbLength;
     bcopy(cdb, cbw + 15, cdbLength);
     rc = s->transport->bulk(s->context, s->interface.bulkOut,
                              cbw, sizeof(cbw), &actual, deadline);

@@ -3,6 +3,7 @@
 #import "EHCIUSBKeyboard.h"
 #import "EHCIUSBPointer.h"
 #import "EHCIVersion.h"
+#import "EHCICompletionWait.h"
 #import <driverkit/generalFuncs.h>
 #import <driverkit/kernelDriver.h>
 #import <driverkit/i386/kernelDriver.h>
@@ -58,6 +59,27 @@ static void irqPublish(void *ctx)
 { thread_wakeup((int)&((EHCIController *)ctx)->_serviceEvent); }
 static const EHCIInterruptOps interruptOps = {
     irqRead, irqWrite, irqPCIRead, irqPCIWrite, irqRearm, irqPublish
+};
+static void completionLock(void *ctx)
+{ EHCIController *c = ctx; [c->_eventLock lock]; [c->_boundaryLock lock]; }
+static void completionUnlock(void *ctx)
+{ EHCIController *c = ctx; [c->_boundaryLock unlock]; [c->_eventLock unlock]; }
+static int completionReady(void *ctx)
+{
+    EHCIController *c = ctx;
+    return EHCICompletionWorkReady(c->_startupReady, c->_interruptState.work,
+        c->_interruptState.stopping, c->_state.fatal, c->_state.rescan,
+        c->_state.scheduleBusy);
+}
+static void completionPrepare(void *ctx)
+{
+    EHCIController *c = ctx;
+    assert_wait((int)&c->_serviceEvent, FALSE);
+    thread_set_timeout(1);
+}
+static void completionBlock(void *ctx) { (void)ctx; thread_block(); }
+static const EHCICompletionWaitOps completionWaitOps = {
+    completionLock, completionUnlock, completionReady, completionPrepare, completionBlock
 };
 static void completionThread(void *ctx) { [(EHCIController *)ctx runCompletionLoop]; IOExitThread(); }
 static void managementThread(void *ctx) { [(EHCIController *)ctx runManagementLoop]; IOExitThread(); }
@@ -275,9 +297,11 @@ static void pointerThread(void *ctx) { [(EHCIController *)ctx runInputLoop:1]; I
                 EHCIInterruptRestore(&_interruptState);
             [_boundaryLock unlock];
         }
-        /* Timed wake avoids a lost wake between the two independent locks.
-         * INTx idle scans do not access MMIO or descriptors. */
-        IOSleep(_interruptState.mode == EHCI_MODE_POLLING ? 5 : 1);
+        /* Register under both publication locks before blocking. A wake
+         * after unlock cancels the registered wait, including before block.
+         * The timeout keeps startup/retry progress; idle INTx does not poll. */
+        if (_interruptState.mode == EHCI_MODE_POLLING) IOSleep(5);
+        else EHCICompletionWait(self, &completionWaitOps);
     }
 }
 - (void)runManagementLoop
@@ -410,6 +434,8 @@ ehci_u64 EHCIPlatformMilliseconds(void)
 { ns_time_t now; IOGetTimestamp(&now); return (ehci_u64)now / 1000000ULL; }
 void EHCIPlatformPause(EHCIControllerState *s, unsigned ms)
 { EHCIController *c = s->owner; [c->_eventLock unlock]; IOSleep(ms); [c->_eventLock lock]; }
+void EHCIPlatformDelay(EHCIControllerState *s, unsigned us)
+{ (void)s; IODelay(us); }
 void EHCIPlatformWake(void *c) { irqPublish(c); }
 void EHCIPlatformKeyboardReport(void *c, const ehci_u8 *b, ehci_u32 n)
 { [(EHCIController *)c handleKeyboardReport:b length:n]; }

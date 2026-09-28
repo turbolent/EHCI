@@ -1,6 +1,6 @@
 "Title" = "PCI EHCI USB 2.0 Controller";
 "Family" = "System";
-"Version" = "0.2";
+"Version" = "0.3";
 "Location" = "";
 "Instance" = "0";
 "Driver Name" = "EHCIController";
