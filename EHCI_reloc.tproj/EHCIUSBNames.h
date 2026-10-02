@@ -6,6 +6,17 @@
 #define USBCoreDescriptorNext EHCIUSBCoreDescriptorNext
 #define USBCoreDeviceInitialize EHCIUSBCoreDeviceInitialize
 #define USBCoreEnumerateDevice EHCIUSBCoreEnumerateDevice
+#define USBCoreReadDevice EHCIUSBCoreReadDevice
+#define USBCoreReadConfiguration EHCIUSBCoreReadConfiguration
+#define USBCoreSelectConfiguration EHCIUSBCoreSelectConfiguration
+#define USBECMFindInterface EHCIUSBECMFindInterface
+#define USBECMReadMAC EHCIUSBECMReadMAC
+#define USBECMDecodeMAC EHCIUSBECMDecodeMAC
+#define USBECMSetFilter EHCIUSBECMSetFilter
+#define USBECMNotification EHCIUSBECMNotification
+#define USBECMPrepareFrame EHCIUSBECMPrepareFrame
+#define USBECMQueuePush EHCIUSBECMQueuePush
+#define USBECMQueuePop EHCIUSBECMQueuePop
 #define USBCoreEnumerationErrorName EHCIUSBCoreEnumerationErrorName
 #define USBCoreEnumerationStageName EHCIUSBCoreEnumerationStageName
 #define USBCoreGetDescriptor EHCIUSBCoreGetDescriptor

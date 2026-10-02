@@ -3,7 +3,10 @@
 EHCI is an OPENSTEP driver for PCI EHCI USB 2.0 controllers.
 It supports USB HID boot-protocol mice and keyboards and read-only USB
 mass-storage disks and data CD-ROMs using SCSI Bulk-Only Transport, exposed as
-up to four removable SCSI targets. High-speed root devices and one tier of
+up to four removable SCSI targets. Basic USB CDC-ECM Ethernet support exposes
+one adapter per controller as a normal Ethernet interface with MTU 1500.
+It supports same-adapter unplug/replug; a different MAC requires reboot.
+High-speed root devices and one tier of
 high-speed USB 2.0 hubs are supported, including low/full-speed devices behind
 single-TT or multi-TT hubs.
 

@@ -3,6 +3,7 @@
 #include "EHCIRegs.h"
 #include "USBHID.h"
 #include "USBMassStorage.h"
+#include "USBECM.h"
 
 #define EHCI_TD_COUNT 18U
 #define EHCI_DATA_PAGES 16U
@@ -33,9 +34,10 @@ typedef struct EHCIDevice {
     unsigned hubProtocol, hubCharacteristics, ttThinkTime;
     unsigned powerMA, selfPowerCapable, selfPowered, externalPorts, nonRemovable;
     unsigned portPowerMA[EHCI_MAX_HUB_PORTS + 1];
-    unsigned protocol, interfaceNumber, configurationValue, storage;
+    unsigned protocol, interfaceNumber, configurationValue, storage, ecm;
     unsigned hubChanges, disconnecting, blockedPorts, controlBusy;
     USBMassStorageInterface storageInterface;
+    USBECMInterface ecmInterface;
     USBCoreDevice usb;
     EHCIEndpoint endpoints[EHCI_ENDPOINTS];
 } EHCIDevice;
@@ -44,6 +46,29 @@ typedef struct EHCIStorageBinding {
     ehci_u32 generation, removals;
     unsigned slot, lastPort;
 } EHCIStorageBinding;
+
+/* Bounded notification evidence, copied before the DMA buffer is rearmed. */
+typedef struct EHCIECMNotifySample {
+    unsigned generation, milliseconds, length, requested, used, expected;
+    unsigned qtdToken, qhToken;
+    int result;
+    ehci_u8 bytes[32];
+} EHCIECMNotifySample;
+
+/* Retained across unplug: native network objects can still receive callbacks. */
+typedef struct EHCIECMState {
+    unsigned slot, generation, macValid, enabled, filter, appliedFilter;
+    unsigned rxActive, txActive, notifyActive, rxDrop, recoveries[4];
+    unsigned rxPackets, txPackets, rxErrors, txErrors, removals;
+    unsigned notifyPackets, notifyUSBErrors, notifyParseErrors;
+    unsigned rxUSBErrors, rxOversize, rxInvalid, rxQueueDrops, rxResyncDrops;
+    unsigned rxZeroPackets, rxNoBuffer;
+    EHCIECMNotifySample lastNotify, badNotify;
+    ehci_u8 mac[6];
+    USBECMNotifications notifications;
+    USBECMQueue rx, tx;
+    USBECMFrame transmitting;
+} EHCIECMState;
 
 typedef struct EHCIEnumerationFailure {
     const char *stage;
@@ -68,6 +93,7 @@ typedef struct EHCIControllerState {
     EHCIDMA asyncHead, frameList;
     EHCIDevice devices[EHCI_MAX_DEVICES];
     EHCIStorageBinding storage[USB_STORAGE_TARGETS];
+    EHCIECMState *ecm;
     EHCIEnumerationFailure enumerationFailure;
     void *owner;
 } EHCIControllerState;
@@ -91,6 +117,7 @@ void EHCIPlatformKeyboardReport(void *, const ehci_u8 *, ehci_u32);
 void EHCIPlatformPointerReport(void *, const ehci_u8 *, ehci_u32);
 void EHCIPlatformStorageWake(void *, unsigned);
 void EHCIPlatformStorageAttached(void *);
+void EHCIPlatformNetworkWake(void *);
 #ifdef KERNEL
 #import <driverkit/generalFuncs.h>
 #define EHCIPlatformLog IOLog
@@ -119,6 +146,11 @@ int EHCICoreStorageRecoverEndpoint(EHCIControllerState *, unsigned, ehci_u32,
 int EHCICoreStorageRetireEndpoint(EHCIControllerState *, unsigned, ehci_u32,
                                   ehci_u8, ehci_u64);
 void EHCICoreStorageOffline(EHCIControllerState *, unsigned, ehci_u32);
+EHCIDevice *EHCICoreECMDevice(EHCIControllerState *, unsigned generation);
+void EHCICoreECMPump(EHCIControllerState *);
+int EHCICoreECMTransmit(EHCIControllerState *, unsigned generation,
+                        const ehci_u8 *, unsigned);
+void EHCICoreECMEnable(EHCIControllerState *, unsigned enabled, unsigned filter);
 /* Shared schedule helpers are also exercised directly by host tests. */
 int EHCICoreConfigureEndpoint(EHCIControllerState *, EHCIDevice *, unsigned,
                              unsigned address, unsigned packet, unsigned interval);

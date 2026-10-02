@@ -588,6 +588,53 @@ out:
                    count:(unsigned *)count
 {
     unsigned slot;
+    if (!strcmp(parameter, "EHCIECMState") || !strcmp(parameter, "EHCIECMErrors") ||
+        !strcmp(parameter, "EHCIECMNotify") || !strcmp(parameter, "EHCIECMNotifyBad")) {
+        char report[512];
+        unsigned length;
+        EHCIECMState *n;
+        [_eventLock lock];
+        n = _state.ecm;
+        if (!n) strcpy(report, "absent");
+        else if (!strcmp(parameter, "EHCIECMErrors")) {
+            sprintf(report, "rx_total=%u notify_usb=%u notify_parse=%u rx_usb=%u rx_oversize=%u rx_invalid=%u rx_queue=%u rx_resync=%u rx_zero=%u rx_no_buffer=%u tx_total=%u",
+                n->rxErrors, n->notifyUSBErrors, n->notifyParseErrors, n->rxUSBErrors,
+                n->rxOversize, n->rxInvalid, n->rxQueueDrops, n->rxResyncDrops,
+                n->rxZeroPackets, n->rxNoBuffer, n->txErrors);
+        } else if (!strcmp(parameter, "EHCIECMState")) {
+            EHCIDevice *d = EHCICoreECMDevice(&_state, n->generation);
+            if (!d) sprintf(report, "offline generation=%u removals=%u", n->generation, n->removals);
+            else {
+                EHCIEndpoint *e = &d->endpoints[EHCI_EP_INTERRUPT];
+                sprintf(report, "generation=%u config=%u control=%u data=%u notify_ep=%02x packet=%u bInterval=%u frames=%u phase=%u smask=%02x enabled=%u link_known=%u link_up=%u notify_packets=%u rx_packets=%u tx_packets=%u speed_known=%u downstream=%u upstream=%u",
+                    n->generation, d->configurationValue, d->ecmInterface.controlInterface,
+                    d->ecmInterface.dataInterface, e->address, e->maxPacket,
+                    d->ecmInterface.interval, e->interval, e->phase, e->smask,
+                    n->enabled, n->notifications.linkKnown, n->notifications.linkUp,
+                    n->notifyPackets, n->rxPackets, n->txPackets, n->notifications.speedKnown,
+                    n->notifications.downstream, n->notifications.upstream);
+            }
+        } else {
+            EHCIECMNotifySample *s = !strcmp(parameter, "EHCIECMNotifyBad") ?
+                &n->badNotify : &n->lastNotify;
+            if (!s->generation) strcpy(report, "none");
+            else {
+                unsigned i, at;
+                sprintf(report, "generation=%u ms=%u actual=%u requested=%u used_before=%u expected_before=%u result=%d qtd=%08x qh=%08x bytes=",
+                    s->generation, s->milliseconds, s->length, s->requested,
+                    s->used, s->expected, s->result, s->qtdToken, s->qhToken);
+                at = strlen(report);
+                for (i = 0; i < s->length && i < sizeof(s->bytes); i++) {
+                    sprintf(report + at, "%02x", s->bytes[i]); at += 2;
+                }
+            }
+        }
+        [_eventLock unlock];
+        length = strlen(report) + 1;
+        if (*count < length) { *count = length; return IO_R_INVALID_ARG; }
+        bcopy(report, values, length); *count = length;
+        return IO_R_SUCCESS;
+    }
     for (slot = 0; slot < EHCI_MAX_DEVICES; slot++) {
         char name[32];
         sprintf(name, "EHCIDeviceStatus%u", slot);

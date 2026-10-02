@@ -85,6 +85,15 @@ static void disconnect_device(EHCIControllerState *c, unsigned slot, int isolate
     if (slot >= EHCI_MAX_DEVICES || !c->devices[slot].used) return;
     d = &c->devices[slot];
     d->disconnecting = 1; d->ready = 0;
+    if (c->ecm && c->ecm->slot == slot + 1) {
+        EHCIECMState *n = c->ecm;
+        n->slot = 0; n->generation = new_generation(c); n->removals++;
+        n->txErrors += n->tx.count + (n->txActive != 0);
+        n->rx.count = n->rx.head = n->tx.count = n->tx.head = 0;
+        n->rxActive = n->txActive = n->notifyActive = n->rxDrop = 0;
+        bzero(&n->notifications, sizeof(n->notifications));
+        EHCIPlatformNetworkWake(c->owner);
+    }
     for (i = 0; i < USB_STORAGE_TARGETS; i++) if (c->storage[i].slot == slot + 1) {
         c->storage[i].slot = 0;
         c->storage[i].generation = new_generation(c);
@@ -288,17 +297,110 @@ static int configure_hub(EHCIControllerState *c, EHCIDevice *d, USBEnumerationDa
     return 1;
 }
 
+static int configuration_rank(void *context, const USBEnumerationData *info)
+{
+    EHCIDevice *d = (EHCIDevice *)context;
+    USBDescriptorIterator it;
+    const ehci_u8 *p;
+    ehci_u8 length, type;
+    USBECMInterface ecm;
+    USBHIDInterface hid;
+    USBMassStorageInterface storage;
+    int match;
+    if (info->error) {
+        EHCIPlatformLog("EHCI: address %u configuration index %u rejected: %s at %s (%u/%u bytes)\n",
+            d->address, info->configurationIndex, USBCoreEnumerationErrorName(info->error),
+            USBCoreEnumerationStageName(info->stage), info->actualLength, info->expectedLength);
+        return -1;
+    }
+    EHCIPlatformLog("EHCI: address %u configuration index %u bConfigurationValue %u length %u\n",
+        d->address, info->configurationIndex, info->configurationValue, info->configurationLength);
+    USBCoreDescriptorIteratorInitialize(&it, info->configurationDescriptor, info->configurationLength);
+    while (USBCoreDescriptorNext(&it, &p, &length, &type) > 0) {
+        if (type == 4 && length >= 9)
+            EHCIPlatformLog("EHCI: configuration index %u value %u interface %u alternate %u class/subclass/protocol %02x/%02x/%02x\n",
+                info->configurationIndex, info->configurationValue, p[2], p[3], p[5], p[6], p[7]);
+    }
+    match = USBECMFindInterface(info->configurationDescriptor, info->configurationLength, &ecm);
+    if (match < 0) {
+        EHCIPlatformLog("EHCI: configuration index %u has invalid/unsupported CDC-ECM descriptors\n", info->configurationIndex);
+        return -1;
+    }
+    if (match) return 100;
+    if (info->deviceDescriptor[4] == 9 ||
+        USBHIDFindBootInterface(info->configurationDescriptor, info->configurationLength, &hid) ||
+        USBMassStorageFindInterface(info->configurationDescriptor, info->configurationLength, &storage)) return 1;
+    return 0;
+}
+
+static int configure_ecm(EHCIControllerState *c, EHCIDevice *d, USBEnumerationData *info)
+{
+    EHCIECMState *n = c->ecm;
+    ehci_u8 mac[6];
+    unsigned i, value = info->configurationValue;
+    if (n && n->slot) {
+        EHCIPlatformLog("EHCI: one ECM adapter per controller; additional adapter left unconfigured\n");
+        return 0;
+    }
+    if (!n) {
+        n = EHCIPlatformAllocate(sizeof(*n));
+        if (!n) return 0;
+        bzero(n, sizeof(*n)); n->filter = USB_ECM_FILTER_DEFAULT; c->ecm = n;
+    }
+    if (!USBECMReadMAC(&d->usb, d->ecmInterface.macString, mac)) {
+        EHCIPlatformLog("EHCI: ECM has no valid MAC address string\n"); return 0;
+    }
+    if (n->macValid) for (i = 0; i < 6; i++) if (n->mac[i] != mac[i]) {
+        EHCIPlatformLog("EHCI: ECM replacement MAC differs; reboot required to replace retained interface\n"); return 0;
+    }
+    if (!configuration_power(c, d) || !USBCoreSetConfiguration(&d->usb, value)) return 0;
+    /* SET_CONFIGURATION resets interface alternates and endpoint toggles.
+     * Re-read by descriptor INDEX and reconstruct only this configuration. */
+    if (!USBCoreReadConfiguration(&d->usb, info, info->configurationIndex) ||
+        info->configurationValue != value ||
+        (unsigned)info->configurationDescriptor[8] * 2 != d->powerMA ||
+        ((info->configurationDescriptor[7] & 0x40) != 0) != d->selfPowerCapable ||
+        USBECMFindInterface(info->configurationDescriptor, info->configurationLength, &d->ecmInterface) != 1)
+        return 0;
+    if (!USBECMReadMAC(&d->usb, d->ecmInterface.macString, mac)) return 0;
+    if (n->macValid) for (i = 0; i < 6; i++) if (n->mac[i] != mac[i]) return 0;
+    if (d->ecmInterface.controlAlternate && !USBCoreSetInterface(&d->usb,
+        d->ecmInterface.controlInterface, d->ecmInterface.controlAlternate)) return 0;
+    if (!USBCoreSetInterface(&d->usb, d->ecmInterface.dataInterface, d->ecmInterface.dataAlternate)) return 0;
+    d->ecm = 1;
+    if (!EHCICoreConfigureEndpoint(c, d, EHCI_EP_BULK_IN, d->ecmInterface.bulkIn, d->ecmInterface.inPacket, 0) ||
+        !EHCICoreConfigureEndpoint(c, d, EHCI_EP_BULK_OUT, d->ecmInterface.bulkOut, d->ecmInterface.outPacket, 0) ||
+        (d->ecmInterface.notification && !EHCICoreConfigureEndpoint(c, d, EHCI_EP_INTERRUPT,
+            d->ecmInterface.notification, d->ecmInterface.notificationPacket, d->ecmInterface.interval)) ||
+        !USBECMSetFilter(&d->usb, d->ecmInterface.controlInterface, USB_ECM_FILTER_DEFAULT)) return 0;
+    bcopy(mac, n->mac, 6); n->macValid = 1;
+    n->slot = (unsigned)(d - c->devices) + 1; n->generation = d->generation;
+    n->appliedFilter = USB_ECM_FILTER_DEFAULT;
+    bzero(n->recoveries, sizeof(n->recoveries));
+    bzero(&n->lastNotify, sizeof(n->lastNotify));
+    bzero(&n->badNotify, sizeof(n->badNotify));
+    EHCIPlatformLog("EHCI: ECM selected index %u value %u control %u data %u alternate %u bulk %02x/%02x MAC %02x:%02x:%02x:%02x:%02x:%02x\n",
+        info->configurationIndex, value, d->ecmInterface.controlInterface, d->ecmInterface.dataInterface,
+        d->ecmInterface.dataAlternate, d->ecmInterface.bulkIn, d->ecmInterface.bulkOut,
+        mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    EHCIPlatformLog("EHCI: ECM notification endpoint %02x packet %u bInterval %u frames %u phase %u smask %02x\n",
+        d->ecmInterface.notification, d->ecmInterface.notificationPacket,
+        d->ecmInterface.interval, d->endpoints[EHCI_EP_INTERRUPT].interval,
+        d->endpoints[EHCI_EP_INTERRUPT].phase, d->endpoints[EHCI_EP_INTERRUPT].smask);
+    return 1;
+}
+
 static int attach_device(EHCIControllerState *c, unsigned rootPort,
                          unsigned parent, unsigned parentPort, unsigned speed)
 {
     EHCIDevice *d;
-    USBEnumerationData info;
+    USBEnumerationData *info = 0;
     USBHIDInterface hid;
     ehci_u8 first[8];
     ehci_u16 actual;
     unsigned slot, address, target;
+    int selection;
     const char *stage = "endpoint zero";
-    bzero(&info, sizeof(info));
     bzero(&hid, sizeof(hid));
     for (slot = 0; slot < EHCI_MAX_DEVICES && c->devices[slot].used; slot++) {}
     if (slot == EHCI_MAX_DEVICES || !(address = allocate_address(c))) {
@@ -313,6 +415,9 @@ static int attach_device(EHCIControllerState *c, unsigned rootPort,
     if (parent && speed != EHCI_SPEED_HIGH) {
         d->ttAddress = c->devices[parent - 1].address; d->ttPort = parentPort;
     }
+    info = EHCIPlatformAllocate(sizeof(*info));
+    if (!info) goto fail;
+    bzero(info, sizeof(*info));
     USBCoreDeviceInitialize(&d->usb, &usb_ops, c, d);
     if (!EHCICoreConfigureEndpoint(c, d, 0, 0, speed == EHCI_SPEED_HIGH ? 64 : 8, 0)) goto fail;
     stage = "initial descriptor";
@@ -323,14 +428,26 @@ static int attach_device(EHCIControllerState *c, unsigned rootPort,
     d->address = address;
     EHCIPlatformPause(c, 2);
     stage = "device/configuration descriptors";
-    if (!USBCoreEnumerateDevice(&d->usb, &info)) goto fail;
-    d->configurationValue = info.configurationValue;
-    d->powerMA = (unsigned)info.configurationDescriptor[8] * 2;
-    d->selfPowerCapable = (info.configurationDescriptor[7] & 0x40) != 0;
-    if (info.deviceDescriptor[4] == 9) {
+    if (!USBCoreReadDevice(&d->usb, info)) goto fail;
+    EHCIPlatformLog("EHCI: address %u USB %04x:%04x bNumConfigurations %u\n",
+        address, (info ? info->vendorID : 0), (info ? info->productID : 0), info->numberConfigurations);
+    selection = USBCoreSelectConfiguration(&d->usb, info, configuration_rank, d);
+    if (selection != 1) {
+        stage = selection < 0 ? "incomplete/invalid configuration scan" : "no CDC-ECM configuration or supported USB interface; unconfigured";
+        goto fail;
+    }
+    EHCIPlatformLog("EHCI: address %u selected configuration index %u bConfigurationValue %u\n",
+        address, info->configurationIndex, info->configurationValue);
+    d->configurationValue = info->configurationValue;
+    d->powerMA = (unsigned)info->configurationDescriptor[8] * 2;
+    d->selfPowerCapable = (info->configurationDescriptor[7] & 0x40) != 0;
+    if (USBECMFindInterface(info->configurationDescriptor, info->configurationLength, &d->ecmInterface) == 1) {
+        stage = "ECM initialization";
+        if (!configure_ecm(c, d, info)) goto fail;
+    } else if (info->deviceDescriptor[4] == 9) {
         stage = "hub configuration";
-        if (!configure_hub(c, d, &info)) goto fail;
-    } else if (USBHIDFindBootInterface(info.configurationDescriptor, info.configurationLength, &hid)) {
+        if (!configure_hub(c, d, info)) goto fail;
+    } else if (USBHIDFindBootInterface(info->configurationDescriptor, info->configurationLength, &hid)) {
         stage = "duplicate HID provider";
         if ((hid.protocol == USB_HID_PROTOCOL_KEYBOARD && c->keyboardSlot != EHCI_MAX_DEVICES) ||
             (hid.protocol == USB_HID_PROTOCOL_MOUSE && c->pointerSlot != EHCI_MAX_DEVICES)) goto fail;
@@ -347,7 +464,7 @@ static int attach_device(EHCIControllerState *c, unsigned rootPort,
         d->protocol = hid.protocol; d->interfaceNumber = hid.interfaceNumber;
         if (hid.protocol == USB_HID_PROTOCOL_KEYBOARD) c->keyboardSlot = slot;
         else c->pointerSlot = slot;
-    } else if (USBMassStorageFindInterface(info.configurationDescriptor, info.configurationLength, &d->storageInterface)) {
+    } else if (USBMassStorageFindInterface(info->configurationDescriptor, info->configurationLength, &d->storageInterface)) {
         stage = "storage configuration";
         for (target = 0; target < USB_STORAGE_TARGETS && c->storage[target].slot; target++) {}
         if (target == USB_STORAGE_TARGETS ||
@@ -362,31 +479,34 @@ static int attach_device(EHCIControllerState *c, unsigned rootPort,
     } else { stage = "unsupported USB interface"; goto fail; }
     d->ready = 1;
     stage = "first interrupt transfer";
-    if (d->endpoints[EHCI_EP_INTERRUPT].configured &&
+    if (!d->ecm && d->endpoints[EHCI_EP_INTERRUPT].configured &&
         EHCICoreSubmit(c, d, &d->endpoints[EHCI_EP_INTERRUPT], 0, 0,
                        d->endpoints[EHCI_EP_INTERRUPT].maxPacket, ~(ehci_u64)0)) goto fail;
     EHCIPlatformLog("EHCI: port %u address %u %s ready (%04x:%04x, speed %u)\n",
-        rootPort, address, d->hub ? "hub" : d->storage ? "storage" :
-        d->protocol == 1 ? "keyboard" : "mouse", info.vendorID, info.productID, speed);
+        rootPort, address, d->hub ? "hub" : d->ecm ? "ECM Ethernet" : d->storage ? "storage" :
+        d->protocol == 1 ? "keyboard" : "mouse", (info ? info->vendorID : 0), (info ? info->productID : 0), speed);
     if (d->storage) EHCIPlatformStorageAttached(c->owner);
+    if (d->ecm) EHCIPlatformNetworkWake(c->owner);
+    EHCIPlatformFree(info, sizeof(*info));
     return 1;
 fail:
     c->enumerationFailure.stage = stage;
     c->enumerationFailure.rootPort = rootPort;
     c->enumerationFailure.hubPort = parentPort;
     c->enumerationFailure.speed = speed;
-    c->enumerationFailure.vendor = info.vendorID;
-    c->enumerationFailure.product = info.productID;
+    c->enumerationFailure.vendor = (info ? info->vendorID : 0);
+    c->enumerationFailure.product = (info ? info->productID : 0);
     c->enumerationFailure.protocol = hid.protocol;
     c->enumerationFailure.packet = hid.maxPacket;
     c->enumerationFailure.interval = hid.interval;
     EHCIPlatformLog("EHCI: port %u hub port %u address %u enumeration rejected at %s (%04x:%04x, speed %u, HID %u packet %u interval %u)\n",
-        rootPort, parentPort, address, stage, info.vendorID, info.productID,
+        rootPort, parentPort, address, stage, (info ? info->vendorID : 0), (info ? info->productID : 0),
         speed, hid.protocol, hid.maxPacket, hid.interval);
     /* SET_ADDRESS may have succeeded even if its status stage failed.
      * Keep the reserved address until physical isolation is verified. */
     d->address = address;
     EHCICoreDisconnect(c, slot);
+    if (info) EHCIPlatformFree(info, sizeof(*info));
     return 0;
 }
 

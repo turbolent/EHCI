@@ -94,6 +94,7 @@ static void pointerThread(void *ctx) { [(EHCIController *)ctx runInputLoop:1]; I
     if (!c) return NO;
     if (![c startStorageProbeWorker] || ![c registerDevice]) { [c free]; return NO; }
     [c finishStorageRegistration];
+    if (![c startNetworkWorker]) { [c free]; return NO; }
     return YES;
 }
 - initFromDeviceDescription:description

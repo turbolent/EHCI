@@ -21,7 +21,7 @@
 
 #define USB_DEVICE_DESCRIPTOR_BYTES 18
 #define USB_CONFIG_HEADER_BYTES     9
-#define USB_MAX_CONFIG_DESCRIPTOR   512
+#define USB_MAX_CONFIG_DESCRIPTOR   4096
 
 #define USB_ENUM_STAGE_NONE         0
 #define USB_ENUM_STAGE_DEVICE_8     1
@@ -77,6 +77,7 @@ typedef struct USBEnumerationData {
     ehci_u16 productID;
     ehci_u8 endpointZeroMaxPacket;
     ehci_u8 configurationValue;
+    ehci_u8 configurationIndex;
     ehci_u8 numberConfigurations;
     ehci_u8 stage;
     ehci_u8 error;
@@ -104,6 +105,14 @@ int USBCoreSetInterface(USBCoreDevice *device, ehci_u8 interfaceNumber,
                         ehci_u8 alternateSetting);
 int USBCoreEnumerateDevice(USBCoreDevice *device,
                            USBEnumerationData *result);
+int USBCoreReadDevice(USBCoreDevice *, USBEnumerationData *);
+int USBCoreReadConfiguration(USBCoreDevice *, USBEnumerationData *, ehci_u8);
+/* Called for every successfully fetched configuration; higher positive rank
+ * wins, zero means unsupported, negative means malformed. No USB mutations.
+ * Return 1 selected, 0 none, -1 incomplete/invalid scan. */
+typedef int (*USBConfigurationRank)(void *, const USBEnumerationData *);
+int USBCoreSelectConfiguration(USBCoreDevice *, USBEnumerationData *,
+                                USBConfigurationRank, void *);
 const char *USBCoreEnumerationStageName(ehci_u8 stage);
 const char *USBCoreEnumerationErrorName(ehci_u8 error);
 ehci_u16 USBCoreReadLE16(const ehci_u8 *bytes);

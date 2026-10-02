@@ -428,7 +428,7 @@ int EHCICoreConfigureEndpoint(EHCIControllerState *c, EHCIDevice *d,
     e->td = (EHCIqTD *)((ehci_u8 *)e->descriptors.virtualAddress + TD_OFFSET);
     e->qhPhysical = e->descriptors.physicalAddress;
     e->tdPhysical = e->qhPhysical + TD_OFFSET;
-    pages = index >= EHCI_EP_BULK_IN ? EHCI_DATA_PAGES : 1;
+    pages = index >= EHCI_EP_BULK_IN && !d->ecm ? EHCI_DATA_PAGES : 1;
     for (i = 0; i < pages; i++) if (!dma_alloc(&e->data[i], EHCI_PAGE_SIZE)) goto fail;
     e->qh->link = e->qh->next = e->qh->alternate = EHCI_LINK_END;
     e->qh->token = EHCI_QTD_HALTED;
@@ -506,6 +506,11 @@ static int submit_transfer(EHCIControllerState *c, EHCIDevice *d, EHCIEndpoint *
         toggle ^= ((chunk + e->maxPacket - 1) / e->maxPacket) & 1;
         remaining -= chunk; offset += chunk; page++;
     } while (remaining);
+    /* ECM frame boundaries use a short packet, including an explicit ZLP for
+     * exact packet multiples. Never apply this to storage/BOT transfers. */
+    if (d->ecm && e == &d->endpoints[EHCI_EP_BULK_OUT] &&
+        !control && length && !(length % e->maxPacket))
+        fill_td(e, count++, 0, 0, EHCI_PID_OUT, toggle);
     e->dataLast = count;
     /* Every IN qTD can terminate a bulk chain on a short packet. */
     if (e->input) for (page = e->dataFirst; page < e->dataLast; page++)
@@ -696,6 +701,10 @@ int EHCICoreService(EHCIControllerState *c, unsigned causes)
             rc = EHCICoreFinish(c, d, e);
             if (rc == USB_TRANSFER_PENDING) continue;
             EHCIPlatformWake(c->owner);
+            if (d->ecm) {
+                EHCIPlatformNetworkWake(c->owner);
+                continue; /* ECM worker owns result consumption and rearming. */
+            }
             if (d->storage) {
                 unsigned target;
                 for (target = 0; target < USB_STORAGE_TARGETS; target++)
@@ -818,6 +827,7 @@ int EHCICoreReleaseDMA(EHCIControllerState *c, int busMasterDisabled)
     for (i = 0; i < EHCI_MAX_DEVICES; i++)
         for (j = 0; j < EHCI_ENDPOINTS; j++) endpoint_free(&c->devices[i].endpoints[j]);
     dma_free(&c->asyncHead); dma_free(&c->frameList);
+    if (c->ecm) { EHCIPlatformFree(c->ecm, sizeof(*c->ecm)); c->ecm = 0; }
     c->dmaArmed = 0;
     return 1;
 }
@@ -825,3 +835,4 @@ int EHCICoreReleaseDMA(EHCIControllerState *c, int busMasterDisabled)
 /* Hub/enumeration routines are compiled in the same translation unit so the
  * descriptor allocator and synchronous EP0 machinery have private linkage. */
 #include "EHCIEnumeration.inc"
+#include "EHCIECM.inc"

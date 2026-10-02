@@ -80,14 +80,14 @@ USBCoreSetInterface(USBCoreDevice *device, ehci_u8 interfaceNumber,
 
 static int
 get_exact_descriptor(USBCoreDevice *device, USBEnumerationData *result,
-                     ehci_u8 stage, ehci_u8 type, void *bytes,
+                     ehci_u8 stage, ehci_u8 type, ehci_u8 index, void *bytes,
                      ehci_u16 length)
 {
     ehci_u16 actual = 0;
     result->stage = stage;
     result->expectedLength = length;
     result->actualLength = 0;
-    if (!USBCoreGetDescriptor(device, type, 0, bytes, length, &actual)) {
+    if (!USBCoreGetDescriptor(device, type, index, bytes, length, &actual)) {
         result->actualLength = actual;
         result->error = USB_ENUM_ERROR_TRANSFER;
         return 0;
@@ -101,16 +101,15 @@ get_exact_descriptor(USBCoreDevice *device, USBEnumerationData *result,
 }
 
 int
-USBCoreEnumerateDevice(USBCoreDevice *device, USBEnumerationData *result)
+USBCoreReadDevice(USBCoreDevice *device, USBEnumerationData *result)
 {
-    ehci_u16 total;
     ehci_u8 packet;
 
     if (!device || !result)
         return 0;
     bzero(result, sizeof(*result));
     if (!get_exact_descriptor(device, result, USB_ENUM_STAGE_DEVICE_8,
-                              USB_DESC_DEVICE, result->deviceDescriptor, 8))
+                              USB_DESC_DEVICE, 0, result->deviceDescriptor, 8))
         return 0;
     if (result->deviceDescriptor[0] < USB_DEVICE_DESCRIPTOR_BYTES ||
         result->deviceDescriptor[1] != USB_DESC_DEVICE) {
@@ -134,7 +133,7 @@ USBCoreEnumerateDevice(USBCoreDevice *device, USBEnumerationData *result)
         return 0;
     }
     if (!get_exact_descriptor(device, result, USB_ENUM_STAGE_DEVICE_FULL,
-                              USB_DESC_DEVICE, result->deviceDescriptor,
+                              USB_DESC_DEVICE, 0, result->deviceDescriptor,
                               USB_DEVICE_DESCRIPTOR_BYTES))
         return 0;
     if (result->deviceDescriptor[0] < USB_DEVICE_DESCRIPTOR_BYTES ||
@@ -150,8 +149,28 @@ USBCoreEnumerateDevice(USBCoreDevice *device, USBEnumerationData *result)
         return 0;
     }
 
+    result->stage = USB_ENUM_STAGE_COMPLETE;
+    return 1;
+}
+
+int USBCoreReadConfiguration(USBCoreDevice *device, USBEnumerationData *result,
+                            ehci_u8 index)
+{
+    ehci_u16 total;
+    USBDescriptorIterator iterator;
+    const ehci_u8 *descriptor;
+    ehci_u8 length, type;
+    int rc;
+    if (!device || !result) return 0;
+    result->configurationIndex = index;
+    result->configurationValue = 0;
+    result->configurationLength = 0;
+    result->error = USB_ENUM_ERROR_NONE;
+    if (index >= result->numberConfigurations) {
+        result->error = USB_ENUM_ERROR_INVALID; return 0;
+    }
     if (!get_exact_descriptor(device, result, USB_ENUM_STAGE_CONFIG_9,
-                              USB_DESC_CONFIG,
+                              USB_DESC_CONFIG, index,
                               result->configurationDescriptor,
                               USB_CONFIG_HEADER_BYTES))
         return 0;
@@ -167,7 +186,7 @@ USBCoreEnumerateDevice(USBCoreDevice *device, USBEnumerationData *result)
         return 0;
     }
     if (!get_exact_descriptor(device, result, USB_ENUM_STAGE_CONFIG_FULL,
-                              USB_DESC_CONFIG,
+                              USB_DESC_CONFIG, index,
                               result->configurationDescriptor, total))
         return 0;
     if (result->configurationDescriptor[0] < USB_CONFIG_HEADER_BYTES ||
@@ -179,9 +198,43 @@ USBCoreEnumerateDevice(USBCoreDevice *device, USBEnumerationData *result)
     }
     result->configurationLength = total;
     result->configurationValue = result->configurationDescriptor[5];
+    USBCoreDescriptorIteratorInitialize(&iterator, result->configurationDescriptor, total);
+    while ((rc = USBCoreDescriptorNext(&iterator, &descriptor, &length, &type)) > 0) {
+        if ((type == USB_DESC_INTERFACE && length < 9) ||
+            (type == USB_DESC_ENDPOINT && length < 7)) {
+            result->error = USB_ENUM_ERROR_INVALID; return 0;
+        }
+    }
+    if (rc < 0) { result->error = USB_ENUM_ERROR_INVALID; return 0; }
     result->stage = USB_ENUM_STAGE_COMPLETE;
     result->error = USB_ENUM_ERROR_NONE;
     return 1;
+}
+
+int USBCoreEnumerateDevice(USBCoreDevice *device, USBEnumerationData *result)
+{
+    return USBCoreReadDevice(device, result) &&
+        USBCoreReadConfiguration(device, result, 0);
+}
+
+int USBCoreSelectConfiguration(USBCoreDevice *device, USBEnumerationData *result,
+                               USBConfigurationRank rank, void *context)
+{
+    unsigned i, selected = 0;
+    int best = 0, failed = 0, score;
+    if (!device || !result || !rank) return -1;
+    for (i = 0; i < result->numberConfigurations; i++) {
+        if (!USBCoreReadConfiguration(device, result, (ehci_u8)i)) {
+            /* The observer logs the failing index and transfer diagnostic. */
+            rank(context, result); failed = 1; continue;
+        }
+        score = rank(context, result);
+        if (score < 0) failed = 1;
+        if (score > best) { selected = i; best = score; }
+    }
+    if (failed) return -1;
+    if (!best) return 0;
+    return USBCoreReadConfiguration(device, result, (ehci_u8)selected) ? 1 : -1;
 }
 
 const char *

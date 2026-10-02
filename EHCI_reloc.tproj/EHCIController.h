@@ -10,6 +10,7 @@
 #import "EHCIStorageStats.h"
 @class EHCIUSBKeyboard;
 @class EHCIUSBPointer;
+@class EHCIUSBEthernet;
 @interface EHCIController : IOSCSIController
 {
 @public /* C platform bridge; all access follows the documented lock order. */
@@ -44,6 +45,9 @@
     BOOL _storageProbePending;
     BOOL _storageProbeRunning;
     int _storageProbeEvent;
+    EHCIUSBEthernet *_ethernet;
+    unsigned _networkAttachFailed;
+    int _networkEvent;
 }
 + (BOOL)probe:description;
 - initFromDeviceDescription:description;
@@ -58,6 +62,11 @@
 - (void)handleKeyboardReport:(const unsigned char *)report length:(unsigned)length;
 - (void)handlePointerReport:(const unsigned char *)report length:(unsigned)length;
 - (void)queueKeyboardLEDs:(unsigned char)leds;
+@end
+
+@interface EHCIController (Network)
+- (BOOL)startNetworkWorker;
+- (void)runNetworkLoop;
 @end
 
 @interface EHCIController (Storage)

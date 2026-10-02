@@ -1,1 +1,1 @@
-#define EHCI_VERSION "0.4"
+#define EHCI_VERSION "0.5"
