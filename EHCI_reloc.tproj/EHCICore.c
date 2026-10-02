@@ -428,7 +428,7 @@ int EHCICoreConfigureEndpoint(EHCIControllerState *c, EHCIDevice *d,
     e->td = (EHCIqTD *)((ehci_u8 *)e->descriptors.virtualAddress + TD_OFFSET);
     e->qhPhysical = e->descriptors.physicalAddress;
     e->tdPhysical = e->qhPhysical + TD_OFFSET;
-    pages = index >= EHCI_EP_BULK_IN && !d->ecm ? EHCI_DATA_PAGES : 1;
+    pages = index >= EHCI_EP_BULK_IN ? EHCI_DATA_PAGES : 1;
     for (i = 0; i < pages; i++) if (!dma_alloc(&e->data[i], EHCI_PAGE_SIZE)) goto fail;
     e->qh->link = e->qh->next = e->qh->alternate = EHCI_LINK_END;
     e->qh->token = EHCI_QTD_HALTED;
@@ -483,6 +483,7 @@ static int submit_transfer(EHCIControllerState *c, EHCIDevice *d, EHCIEndpoint *
         schedule_leave(c); return USB_TRANSFER_TIMEOUT;
     }
     e->control = control;
+    e->ecmBatch = 0;
     e->input = control ? (setup->requestType & USB_DIR_IN) != 0 : (e->address & USB_DIR_IN) != 0;
     e->total = length; e->actual = 0; e->result = USB_TRANSFER_PENDING;
     e->deadline = deadline; e->statusTD = NO_TD;
@@ -548,12 +549,14 @@ int EHCICoreSubmit(EHCIControllerState *c, EHCIDevice *d, EHCIEndpoint *e,
     return submit_transfer(c, d, e, setup, buffer, length, deadline, 0);
 }
 
+#include "EHCIECMTransfer.inc"
+
 int EHCICoreFinish(EHCIControllerState *c, EHCIDevice *d, EHCIEndpoint *e)
 {
     unsigned n, actual = 0, shortSeen = 0, toggle = e->toggle;
     int result = USB_TRANSFER_OK;
-    (void)d;
     if (!e->waiting) return e->result;
+    if (e->ecmBatch) return ecm_batch_finish(c, d, e);
     barrier();
     for (n = 0; n < e->count; n++) {
         unsigned token = e->td[n].token, left = EHCI_QTD_REMAIN(token);
@@ -697,9 +700,14 @@ int EHCICoreService(EHCIControllerState *c, unsigned causes)
         for (j = 0; j < EHCI_ENDPOINTS; j++) {
             EHCIEndpoint *e = &d->endpoints[j];
             int rc;
+            unsigned completed = e->batchDone;
             if (!e->waiting) continue;
             rc = EHCICoreFinish(c, d, e);
-            if (rc == USB_TRANSFER_PENDING) continue;
+            if (rc == USB_TRANSFER_PENDING) {
+                if (d->ecm && e->ecmBatch && completed != e->batchDone)
+                    EHCIPlatformNetworkWake(c->owner);
+                continue;
+            }
             EHCIPlatformWake(c->owner);
             if (d->ecm) {
                 EHCIPlatformNetworkWake(c->owner);

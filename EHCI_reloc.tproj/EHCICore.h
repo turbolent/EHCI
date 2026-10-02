@@ -5,7 +5,8 @@
 #include "USBMassStorage.h"
 #include "USBECM.h"
 
-#define EHCI_TD_COUNT 18U
+#define EHCI_TD_COUNT 34U
+#define EHCI_ECM_BATCH_FRAMES 16U
 #define EHCI_DATA_PAGES 16U
 #define EHCI_FRAME_COUNT 1024U
 #define EHCI_ENDPOINTS 4U
@@ -20,6 +21,8 @@ typedef struct EHCIEndpoint {
     EHCIqTD *td;
     ehci_u32 qhPhysical, tdPhysical;
     ehci_u32 lengths[EHCI_TD_COUNT], total, actual;
+    unsigned ecmBatch, batchDone, batchFrames, batchComplete;
+    ehci_u8 frameEnd[EHCI_TD_COUNT];
     unsigned count, dataFirst, dataLast, statusTD;
     unsigned address, maxPacket, interval, phase, smask, cmask;
     unsigned configured, linked, periodic, waiting, control, input;
@@ -63,11 +66,13 @@ typedef struct EHCIECMState {
     unsigned notifyPackets, notifyUSBErrors, notifyParseErrors;
     unsigned rxUSBErrors, rxOversize, rxInvalid, rxQueueDrops, rxResyncDrops;
     unsigned rxZeroPackets, rxNoBuffer;
+    unsigned rxBatches, txBatches, txInFlight, txQueueHighWater, asyncRearms;
+    unsigned txQueueDrops, txInvalid, txUSBErrors, txBackpressure;
+    unsigned txNativeQueued, txNativeHighWater;
     EHCIECMNotifySample lastNotify, badNotify;
     ehci_u8 mac[6];
     USBECMNotifications notifications;
     USBECMQueue rx, tx;
-    USBECMFrame transmitting;
 } EHCIECMState;
 
 typedef struct EHCIEnumerationFailure {
@@ -148,6 +153,7 @@ int EHCICoreStorageRetireEndpoint(EHCIControllerState *, unsigned, ehci_u32,
 void EHCICoreStorageOffline(EHCIControllerState *, unsigned, ehci_u32);
 EHCIDevice *EHCICoreECMDevice(EHCIControllerState *, unsigned generation);
 void EHCICoreECMPump(EHCIControllerState *);
+int EHCICoreECMBatchStart(EHCIControllerState *, EHCIDevice *, EHCIEndpoint *);
 int EHCICoreECMTransmit(EHCIControllerState *, unsigned generation,
                         const ehci_u8 *, unsigned);
 void EHCICoreECMEnable(EHCIControllerState *, unsigned enabled, unsigned filter);

@@ -589,7 +589,8 @@ out:
 {
     unsigned slot;
     if (!strcmp(parameter, "EHCIECMState") || !strcmp(parameter, "EHCIECMErrors") ||
-        !strcmp(parameter, "EHCIECMNotify") || !strcmp(parameter, "EHCIECMNotifyBad")) {
+        !strcmp(parameter, "EHCIECMNotify") || !strcmp(parameter, "EHCIECMNotifyBad") ||
+        !strcmp(parameter, "EHCIECMPerf")) {
         char report[512];
         unsigned length;
         EHCIECMState *n;
@@ -601,6 +602,11 @@ out:
                 n->rxErrors, n->notifyUSBErrors, n->notifyParseErrors, n->rxUSBErrors,
                 n->rxOversize, n->rxInvalid, n->rxQueueDrops, n->rxResyncDrops,
                 n->rxZeroPackets, n->rxNoBuffer, n->txErrors);
+        } else if (!strcmp(parameter, "EHCIECMPerf")) {
+            sprintf(report, "rx_batches=%u tx_batches=%u tx_inflight=%u tx_queued=%u tx_high_water=%u native_queued=%u native_high_water=%u backpressure=%u tx_queue_drops=%u tx_invalid=%u tx_usb=%u batch_limit=%u async_rearms=%u",
+                n->rxBatches, n->txBatches, n->txInFlight, n->tx.count, n->txQueueHighWater,
+                n->txNativeQueued, n->txNativeHighWater, n->txBackpressure,
+                n->txQueueDrops, n->txInvalid, n->txUSBErrors, EHCI_ECM_BATCH_FRAMES, n->asyncRearms);
         } else if (!strcmp(parameter, "EHCIECMState")) {
             EHCIDevice *d = EHCICoreECMDevice(&_state, n->generation);
             if (!d) sprintf(report, "offline generation=%u removals=%u", n->generation, n->removals);

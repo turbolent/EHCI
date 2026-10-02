@@ -34,11 +34,13 @@ static void networkThread(void *context)
     enet_addr_t address;
     [self setUnit:0x7fffffffU];
     _controller = controller;
+    _outputQueue = [[IONetbufQueue alloc] initWithMaxCount:128];
+    if (!_outputQueue) return nil;
     /* A separate, resource-free description: never give IOEthernet the PCI
      * controller's description, IRQ list, device port or memory ranges. */
     _usbDescription = [[EHCIECMDeviceDescription alloc] init];
     /* IOEthernet's free assumes its multicast queue was initialized. */
-    if (!_usbDescription) return nil;
+    if (!_usbDescription) { [_outputQueue free]; _outputQueue = nil; return nil; }
     _published = 1; /* superclass may publish an I/O thread before returning */
     if (![super initFromDeviceDescription:_usbDescription]) return nil;
     bcopy(mac, &address, 6);
@@ -59,22 +61,12 @@ static void networkThread(void *context)
         (_promiscuous ? USB_ECM_FILTER_PROMISCUOUS : 0) |
         ((_multicast || _multicastAddresses) ? USB_ECM_FILTER_ALL_MULTICAST : 0);
     EHCICoreECMEnable(&_controller->_state, enable, filter);
+    if (!enable) [self flushOutputQueue];
     [_controller->_eventLock unlock];
     [self setRunning:enable];
     return YES;
 }
-- (void)transmit:(netbuf_t)packet
-{
-    unsigned length;
-    if (!packet) return;
-    length = nb_size(packet);
-    [_controller->_eventLock lock];
-    if (_controller->_state.ecm)
-        EHCICoreECMTransmit(&_controller->_state, _controller->_state.ecm->generation,
-            (const ehci_u8 *)nb_map(packet), length);
-    [_controller->_eventLock unlock];
-    nb_free(packet);
-}
+#include "EHCIEthernetQueue.inc"
 #include "EHCIEthernetOutput.inc"
 - (void)updateFilter
 {
@@ -121,6 +113,9 @@ static void networkThread(void *context)
     USBECMFrame frame;
     EHCIECMState *n;
     unsigned count, running = 0, rxErrors, txErrors, txPackets;
+    [_controller->_eventLock lock];
+    [self drainOutputQueue];
+    [_controller->_eventLock unlock];
     for (count = 0; count < USB_ECM_QUEUE_SIZE; count++) {
         int have = 0;
         netbuf_t packet;
@@ -160,6 +155,7 @@ static void networkThread(void *context)
 {
     if (_published) { [self setRunning:NO]; return self; }
     [_usbDescription free];
+    [_outputQueue free];
     return [super free];
 }
 @end

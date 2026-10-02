@@ -88,7 +88,8 @@ static void disconnect_device(EHCIControllerState *c, unsigned slot, int isolate
     if (c->ecm && c->ecm->slot == slot + 1) {
         EHCIECMState *n = c->ecm;
         n->slot = 0; n->generation = new_generation(c); n->removals++;
-        n->txErrors += n->tx.count + (n->txActive != 0);
+        n->txErrors += n->tx.count + n->txInFlight;
+        n->txInFlight = 0;
         n->rx.count = n->rx.head = n->tx.count = n->tx.head = 0;
         n->rxActive = n->txActive = n->notifyActive = n->rxDrop = 0;
         bzero(&n->notifications, sizeof(n->notifications));

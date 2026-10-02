@@ -28,11 +28,17 @@ int EHCICoreECMTransmit(EHCIControllerState *c, unsigned generation,
 {
     EHCIECMState *n = c->ecm;
     if (!EHCICoreECMDevice(c, generation) || !n->enabled ||
-        (n->notifications.linkKnown && !n->notifications.linkUp) ||
-        !USBECMQueuePush(&n->tx, bytes, length)) {
+        (n->notifications.linkKnown && !n->notifications.linkUp)) {
         if (n) n->txErrors++;
         return 0;
     }
+    if (!bytes || length < 14 || length > USB_ECM_FRAME_MAX) {
+        n->txErrors++; n->txInvalid++; return 0;
+    }
+    if (!USBECMQueuePush(&n->tx, bytes, length)) {
+        n->txErrors++; n->txQueueDrops++; return 0;
+    }
+    if (n->tx.count > n->txQueueHighWater) n->txQueueHighWater = n->tx.count;
     EHCIPlatformNetworkWake(c->owner); return 1;
 }
 
@@ -81,7 +87,8 @@ void EHCICoreECMPump(EHCIControllerState *c)
     if (!n) return;
     gen = n->generation; d = EHCICoreECMDevice(c, gen);
     if (!d) {
-        n->txErrors += n->tx.count + (n->txActive != 0);
+        n->txErrors += n->tx.count + n->txInFlight;
+        n->txInFlight = 0;
         n->rx.count = n->rx.head = n->tx.count = n->tx.head = 0;
         n->rxActive = n->txActive = n->notifyActive = 0;
         return;
@@ -108,7 +115,7 @@ void EHCICoreECMPump(EHCIControllerState *c)
                     ecm_offline(c, gen, "disable retirement failed"); return;
                 }
                 if (index == EHCI_EP_BULK_IN) n->rxDrop = 1;
-                else n->txErrors++;
+                else { n->txErrors += n->txInFlight; n->txInFlight = 0; }
                 n->recoveries[index] = 0;
                 *active = 0;
             }
@@ -122,7 +129,9 @@ void EHCICoreECMPump(EHCIControllerState *c)
         if (*active && !e->waiting) {
             rc = e->result; *active = 0;
             if (rc) {
-                if (index == EHCI_EP_BULK_OUT) n->txErrors++;
+                if (index == EHCI_EP_BULK_OUT) {
+                    n->txErrors += n->txInFlight; n->txInFlight = 0; n->txUSBErrors++;
+                }
                 if (index == EHCI_EP_INTERRUPT) n->notifyUSBErrors++;
                 if (index == EHCI_EP_BULK_IN) { n->rxErrors++; n->rxUSBErrors++; }
                 if (rc != USB_TRANSFER_STALL && rc != USB_TRANSFER_TIMEOUT) {
@@ -135,8 +144,7 @@ void EHCICoreECMPump(EHCIControllerState *c)
                 if (index == EHCI_EP_INTERRUPT) n->notifications.used = n->notifications.expected = 0;
             } else {
                 n->recoveries[index] = 0;
-                if (index == EHCI_EP_BULK_OUT) n->txPackets++;
-                else if (index == EHCI_EP_INTERRUPT) {
+                if (index == EHCI_EP_INTERRUPT) {
                     int changes;
                     n->notifyPackets++;
                     ecm_sample_notification(n, e, gen);
@@ -156,36 +164,18 @@ void EHCICoreECMPump(EHCIControllerState *c)
                         n->notifyParseErrors++;
                         if (n->badNotify.generation != gen) n->badNotify = n->lastNotify;
                     }
-                } else if (e->actual == USB_ECM_RX_BYTES) {
-                    n->rxDrop = 1; n->rxErrors++; n->rxOversize++;
-                } else if (n->rxDrop) { n->rxDrop = 0; n->rxResyncDrops++; }
-                else if (e->actual) {
-                    if (!USBECMQueuePush(&n->rx, e->data[0].virtualAddress, e->actual)) {
-                        n->rxErrors++;
-                        if (e->actual < 14 || e->actual > USB_ECM_FRAME_MAX) n->rxInvalid++;
-                        else n->rxQueueDrops++;
-                    }
-                    else n->rxPackets++;
-                } else n->rxZeroPackets++;
+                }
             }
         }
         if (!*active) {
-            if (index == EHCI_EP_BULK_OUT) {
-                USBECMFrame *f = &n->transmitting;
-                unsigned length;
-                if (!USBECMQueuePop(&n->tx, f)) continue;
-                /* In-place padding is safe: each queue entry has full MTU capacity. */
-                length = USBECMPrepareFrame(f->bytes, f->bytes, f->length);
-                rc = EHCICoreSubmit(c, d, e, 0, f->bytes, length,
-                    EHCIPlatformMilliseconds() + EHCI_TIMEOUT_MS);
-                if (EHCICoreECMDevice(c, gen) != d) return;
-            } else {
-                rc = EHCICoreSubmit(c, d, e, 0, 0,
-                    index == EHCI_EP_BULK_IN ? USB_ECM_RX_BYTES : e->maxPacket, ~(ehci_u64)0);
-                if (EHCICoreECMDevice(c, gen) != d) return;
-            }
+            if (index == EHCI_EP_INTERRUPT)
+                rc = EHCICoreSubmit(c, d, e, 0, 0, e->maxPacket, ~(ehci_u64)0);
+            else rc = EHCICoreECMBatchStart(c, d, e);
+            if (EHCICoreECMDevice(c, gen) != d) return;
             if (rc) { ecm_offline(c, gen, "transfer submission failed"); return; }
-            *active = 1;
+            /* A batch publishes its active flag before schedule_leave can
+             * yield. Completion during that wait still needs consumption. */
+            if (index == EHCI_EP_INTERRUPT) *active = 1;
         }
     }
 }
